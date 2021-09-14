@@ -172,6 +172,23 @@ int main(int argc, const char* argv[]){
         switch(op){
             case OP_ADD:
                 // ADD
+                /* destination register */
+                uint16_t r0 = (instruction >> 9) & 0x7;
+                /* first operand (SR1) */
+                uint16_t r1 = (instruction >> 6) & 0x7;
+                /* immediate flag */
+                uint16_t imm_flag = (instruction >>5 ) & 0x1;
+
+                if(imm_flag){
+                    /* immediate mode */
+                    uint16_t imm5 = sign_extend(instruction & 0x1f, 5);
+                    reg[r0] = reg[r1] + imm5;
+                }else{
+                    /* third register mode */
+                    uint16_t r2 = instruction & 0x7;
+                    reg[r0] = reg[r1] + reg[r2];
+                }
+                
                 break;
             case OP_AND:
                 // AND
