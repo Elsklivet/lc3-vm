@@ -227,10 +227,30 @@ int main(int argc, const char* argv[]){
                 }
                 break;
             case OP_JMP:
-                // JUMP
+                // JUMP and RETURN
+                uint16_t r1 = (instruction >> 6) & 0x7;
+                reg[R_PC] = reg[r1];
                 break;
             case OP_JSR:
                 // JUMP REGISTER
+                /*
+                R7 = PC;†
+                if (bit[11] == 0)
+                    PC = BaseR;
+                else
+                    PC = PC† + SEXT(PCoffset11);
+                */
+                uint16_t long_flag = (instruction >> 11) & 0x1;
+                reg[R_R7] = reg[R_PC];
+                if(long_flag){
+                    /* pc offset is 11-bits wide @ 0 */
+                    uint16_t long_pc_offset = sign_extend(instruction & 0x7ff, 11);
+                    reg[R_PC] += long_pc_offset; /* JSR */
+                }else{
+                    /* BaseR is 3 bits wide @ 6 and the bottom six bits are 0 */
+                    uint16_t r1 = (instruction >> 6) & 0x7;
+                    reg[R_PC] = reg[r1]; /* JSRR */
+                }
                 break;
             case OP_LD:
                 // LOAD
