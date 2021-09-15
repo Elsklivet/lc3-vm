@@ -210,6 +210,10 @@ int main(int argc, const char* argv[]){
                 break;
             case OP_LDI:
                 // LOAD INDIRECT
+		        uint16_t r0 = (instruction >> 9) & 0x7; // 0x7 = 0b0111
+		        uint16_t pc_offset = sign_extend(instruction & 0x1FF, 9);
+                reg[r0] = mem_read(mem_read(reg[R_PC] + pc_offset));
+                update_flags(r0);
                 break;
             case OP_LDR:
                 // LOAD REGISTER
