@@ -188,16 +188,43 @@ int main(int argc, const char* argv[]){
                     uint16_t r2 = instruction & 0x7;
                     reg[r0] = reg[r1] + reg[r2];
                 }
-                
+                update_flags(r0);
                 break;
             case OP_AND:
                 // AND
+                uint16_t r0 = (instruction >> 9) & 0x7; /* 0x7 = 0b0111 */
+                uint16_t r1 = (instruction >> 6) & 0x7;
+                uint16_t imm_flag = (instruction >> 5) & 0x1;
+                if(imm_flag){
+                    /* immediate mode */
+                    /* 0x1f = 0001 1111 */
+                    uint16_t imm5 = sign_extend(instruction & 0x1f, 5); 
+                    reg[r0] = reg[r1] & imm5;
+                }else{
+                    /* third register mode */
+                    uint16_t r2 = instruction & 0x7;
+                    reg[r0] = reg[r1] & reg[r2];
+                }
+                update_flags(r0);
                 break;
             case OP_NOT:
                 // NOT
+                uint16_t r0 = (instruction >> 9) & 0x7;
+                uint16_t r1 = (instruction >> 6) & 0x7;
+                reg[r0] = ~reg[r1];
+                update_flags(r0);
                 break;
             case OP_BR:
                 // BRANCH
+                /*
+                if ((n AND N) OR (z AND Z) OR (p AND P))
+                    PC = PC‡ + SEXT(PCoffset9);
+                */
+                uint16_t pc_offset = sign_extend(instruction & 0x1ff, 9);
+                uint16_t cond_flags = (instruction >> 9) & 0x7;
+                if(cond_flags & reg[R_COND]){
+                    reg[R_PC] += pc_offset;
+                }
                 break;
             case OP_JMP:
                 // JUMP
@@ -207,6 +234,10 @@ int main(int argc, const char* argv[]){
                 break;
             case OP_LD:
                 // LOAD
+                uint16_t r0 = (instruction >> 9) & 0x7; // 0x7 = 0b0111
+		        uint16_t pc_offset = sign_extend(instruction & 0x1FF, 9);
+                reg[r0] = mem_read(reg[R_PC] + pc_offset);
+                update_flags(r0);
                 break;
             case OP_LDI:
                 // LOAD INDIRECT
@@ -217,6 +248,11 @@ int main(int argc, const char* argv[]){
                 break;
             case OP_LDR:
                 // LOAD REGISTER
+                uint16_t r0 = (instruction >> 9) & 0x7;
+                uint16_t r1 = (instruction >> 6) & 0x7;
+                uint16_t offset = sign_extend(instruction & 0x3f, 6);
+                reg[r0] = mem_read(reg[r1] + offset);
+                update_flags(r0);
                 break;
             case OP_LEA:
                 // LOAD EFFECTIVE ADDRESS
@@ -234,7 +270,9 @@ int main(int argc, const char* argv[]){
                 // EXECUTE TRAPCODE
                 break;
             case OP_RES:
+                // DO NOTHING
             case OP_RTI:
+                // DO NOTHING
             default:
                 // BAD OPCODE
                 break;
