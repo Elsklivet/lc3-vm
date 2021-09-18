@@ -1,2 +1,2 @@
 rm *.o *~ lc3.exe
-gcc -O -Wall -g -o lc3.exe lc3.c
+gcc lc3.c -o lc3.exe

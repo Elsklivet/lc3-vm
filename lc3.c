@@ -32,6 +32,24 @@ HANDLE hStdin = INVALID_HANDLE_VALUE;
 // a 16-bit unsigned integer can hold.
 uint16_t memory[UINT16_MAX];
 
+/* memory mapped registers */
+enum
+{
+    MR_KBSR = 0xFE00, /* keyboard status */
+    MR_KBDR = 0xFE02  /* keyboard data */
+};
+
+/* trapcodes */
+enum
+{
+    TRAP_GETC = 0x20,  /* get character from keyboard, not echoed onto the terminal */
+    TRAP_OUT = 0x21,   /* output a character */
+    TRAP_PUTS = 0x22,  /* output a word string */
+    TRAP_IN = 0x23,    /* get character from keyboard, echoed onto the terminal */
+    TRAP_PUTSP = 0x24, /* output a byte string */
+    TRAP_HALT = 0x25   /* halt the program */
+};
+
 // For the registers, we use an enum:
 enum
 {
@@ -113,6 +131,15 @@ uint16_t sign_extend(uint16_t x, int bit_count){
     return x;
 }
 
+/* Our computers are little-endian but lc3 programs are big-endian, 
+so swap the numbers around. This is easy to achieve by shifting
+the bottom bits to the top and top bits to the bottom, then or-ing
+them together. */
+uint16_t swap16(uint16_t x)
+{
+    return (x << 8) | (x >> 8);
+}
+
 // Update flags
 void update_flags(uint16_t r)
 {
@@ -128,6 +155,115 @@ void update_flags(uint16_t r)
     {
         reg[R_COND] = FL_POS;
     }
+}
+
+/* Reads a compiled image file into the VM */
+void read_image_file(FILE* file){
+    /* where to place the image */
+    uint16_t origin;
+    fread(&origin, sizeof(origin), 1, file);
+    origin = swap16(origin);
+
+    uint16_t max_read_size = UINT16_MAX - origin;
+    uint16_t* ptr = memory + origin;
+    size_t read = fread(ptr, sizeof(uint16_t), max_read_size, file);
+
+    while(read-- > 0){
+        *ptr = swap16(*ptr);
+        ++ptr;
+    }
+}
+
+int read_image(const char* image_path){
+    FILE* file = fopen(image_path, "rb");
+    if (!file) { return 0; };
+    read_image_file(file);
+    fclose(file);
+    return 1;
+}
+
+#ifdef linux
+uint16_t check_key()
+{
+    fd_set readfds;
+    FD_ZERO(&readfds);
+    FD_SET(STDIN_FILENO, &readfds);
+
+    struct timeval timeout;
+    timeout.tv_sec = 0;
+    timeout.tv_usec = 0;
+    return select(1, &readfds, NULL, NULL, &timeout) != 0;
+}
+
+struct termios original_tio;
+
+void disable_input_buffering()
+{
+    tcgetattr(STDIN_FILENO, &original_tio);
+    struct termios new_tio = original_tio;
+    new_tio.c_lflag &= ~ICANON & ~ECHO;
+    tcsetattr(STDIN_FILENO, TCSANOW, &new_tio);
+}
+
+void restore_input_buffering()
+{
+    tcsetattr(STDIN_FILENO, TCSANOW, &original_tio);
+}
+
+void handle_interrupt(int signal)
+{
+    restore_input_buffering();
+    printf("\n");
+    exit(-2);
+}
+#endif
+
+#if defined(_WIN32) || defined(_WIN64)
+uint16_t check_key()
+{
+    return WaitForSingleObject(hStdin, 1000) == WAIT_OBJECT_0 && _kbhit();
+}
+
+DWORD fdwMode, fdwOldMode;
+
+void disable_input_buffering()
+{
+    hStdin = GetStdHandle(STD_INPUT_HANDLE);
+    GetConsoleMode(hStdin, &fdwOldMode); /* save old mode */
+    fdwMode = fdwOldMode
+            ^ ENABLE_ECHO_INPUT  /* no input echo */
+            ^ ENABLE_LINE_INPUT; /* return when one or
+                                    more characters are available */
+    SetConsoleMode(hStdin, fdwMode); /* set new mode */
+    FlushConsoleInputBuffer(hStdin); /* clear buffer */
+}
+
+void restore_input_buffering()
+{
+    SetConsoleMode(hStdin, fdwOldMode);
+}
+#endif
+
+void mem_write(uint16_t address, uint16_t val)
+{
+    memory[address] = val;
+}
+
+uint16_t mem_read(uint16_t address)
+{
+    if (address == MR_KBSR)
+    {
+        if (check_key())
+        {
+            memory[MR_KBSR] = (1 << 15);
+            memory[MR_KBDR] = getchar();
+        }
+        else
+        {
+            memory[MR_KBSR] = 0;
+        }
+    }
+    return memory[address];
 }
 
 // All of the instructions need to be implemented here.
@@ -158,6 +294,8 @@ int main(int argc, const char* argv[]){
     }
 
     // Setup
+    signal(SIGINT, handle_interrupt);
+    disable_input_buffering();
 
     // Set PC to its starting position, originating at 0x3000
     enum { PC_START = 0x3000};
@@ -173,6 +311,7 @@ int main(int argc, const char* argv[]){
             case OP_ADD:
                 // ADD
                 /* destination register */
+                {
                 uint16_t r0 = (instruction >> 9) & 0x7;
                 /* first operand (SR1) */
                 uint16_t r1 = (instruction >> 6) & 0x7;
@@ -189,9 +328,11 @@ int main(int argc, const char* argv[]){
                     reg[r0] = reg[r1] + reg[r2];
                 }
                 update_flags(r0);
+                }
                 break;
             case OP_AND:
                 // AND
+                {
                 uint16_t r0 = (instruction >> 9) & 0x7; /* 0x7 = 0b0111 */
                 uint16_t r1 = (instruction >> 6) & 0x7;
                 uint16_t imm_flag = (instruction >> 5) & 0x1;
@@ -206,13 +347,16 @@ int main(int argc, const char* argv[]){
                     reg[r0] = reg[r1] & reg[r2];
                 }
                 update_flags(r0);
+                }
                 break;
             case OP_NOT:
                 // NOT
+                {
                 uint16_t r0 = (instruction >> 9) & 0x7;
                 uint16_t r1 = (instruction >> 6) & 0x7;
                 reg[r0] = ~reg[r1];
                 update_flags(r0);
+                }
                 break;
             case OP_BR:
                 // BRANCH
@@ -220,16 +364,20 @@ int main(int argc, const char* argv[]){
                 if ((n AND N) OR (z AND Z) OR (p AND P))
                     PC = PC‡ + SEXT(PCoffset9);
                 */
+                {
                 uint16_t pc_offset = sign_extend(instruction & 0x1ff, 9);
                 uint16_t cond_flags = (instruction >> 9) & 0x7;
                 if(cond_flags & reg[R_COND]){
                     reg[R_PC] += pc_offset;
                 }
+                }
                 break;
             case OP_JMP:
                 // JUMP and RETURN
+                {
                 uint16_t r1 = (instruction >> 6) & 0x7;
                 reg[R_PC] = reg[r1];
+                }
                 break;
             case OP_JSR:
                 // JUMP REGISTER
@@ -240,6 +388,7 @@ int main(int argc, const char* argv[]){
                 else
                     PC = PC† + SEXT(PCoffset11);
                 */
+                {
                 uint16_t long_flag = (instruction >> 11) & 0x1;
                 reg[R_R7] = reg[R_PC];
                 if(long_flag){
@@ -251,43 +400,133 @@ int main(int argc, const char* argv[]){
                     uint16_t r1 = (instruction >> 6) & 0x7;
                     reg[R_PC] = reg[r1]; /* JSRR */
                 }
+                }
                 break;
             case OP_LD:
                 // LOAD
+                {
                 uint16_t r0 = (instruction >> 9) & 0x7; // 0x7 = 0b0111
 		        uint16_t pc_offset = sign_extend(instruction & 0x1FF, 9);
                 reg[r0] = mem_read(reg[R_PC] + pc_offset);
                 update_flags(r0);
+                }
                 break;
             case OP_LDI:
                 // LOAD INDIRECT
+                {
 		        uint16_t r0 = (instruction >> 9) & 0x7; // 0x7 = 0b0111
 		        uint16_t pc_offset = sign_extend(instruction & 0x1FF, 9);
                 reg[r0] = mem_read(mem_read(reg[R_PC] + pc_offset));
                 update_flags(r0);
+                }
                 break;
             case OP_LDR:
                 // LOAD REGISTER
+                {
                 uint16_t r0 = (instruction >> 9) & 0x7;
                 uint16_t r1 = (instruction >> 6) & 0x7;
                 uint16_t offset = sign_extend(instruction & 0x3f, 6);
                 reg[r0] = mem_read(reg[r1] + offset);
                 update_flags(r0);
+                }
                 break;
             case OP_LEA:
                 // LOAD EFFECTIVE ADDRESS
+                {
+                uint16_t r0 = (instruction >> 9) & 0x7;
+                uint16_t pc_offset = sign_extend(instruction & 0x1FF, 9);
+                reg[r0] = reg[R_PC] + pc_offset;
+                update_flags(r0);
+                }
                 break;
             case OP_ST:
                 // STORE
+                {
+                uint16_t sr = (instruction >> 9) & 0x7;
+                uint16_t pc_offset = sign_extend(instruction & 0x1FF, 9);
+                mem_write(reg[R_PC] + pc_offset, reg[sr]);
+                }
                 break;
             case OP_STI:
                 // STORE INDIRECT
+                {
+                uint16_t sr = (instruction >> 9) & 0x7;
+                uint16_t pc_offset = sign_extend(instruction & 0x1ff, 9);
+                mem_write(mem_read(reg[R_PC] + pc_offset), reg[sr]);
+                }
                 break;
             case OP_STR:
                 // STORE REGISTER
+                {
+                uint16_t sr = (instruction >> 9) & 0x7;
+                uint16_t baseR = (instruction >> 6) & 0x7;
+                uint16_t pc_offset = sign_extend(instruction & 0x3f, 6);
+                mem_write(reg[baseR] + pc_offset, reg[sr]);
+                }
                 break;
             case OP_TRAP:
                 // EXECUTE TRAPCODE
+                switch (instruction & 0xFF) // Bottom 8 bits are trapcode
+                {
+                    case TRAP_GETC:
+                        // TRAP GETC
+                        /* read a single ASCII char */
+                        { reg[R_R0] = (uint16_t)getchar(); }
+                        break;
+                    case TRAP_OUT:
+                        // TRAP OUT
+                        {
+                        putc((char)reg[R_R0], stdout);
+                        fflush(stdout);
+                        }
+                        break;
+                    case TRAP_PUTS:
+                        // TRAP PUTS
+                        {
+                        uint16_t * chars = memory + reg[R_R0];
+                        while(*chars){
+                            putc((char)*chars, stdout);
+                            ++chars;
+                        }
+                        fflush(stdout);
+                        }
+                        break;
+                    case TRAP_IN:
+                        // TRAP IN
+                        {
+                        printf("Enter a character: ");
+                        char c = getchar();
+                        putc(c, stdout);
+                        reg[R_R0] = (uint16_t)c;
+                        }
+                        break;
+                    case TRAP_PUTSP:
+                        // TRAP PUTSPs
+                        /* one char per byte (two bytes per word)
+                        here we need to swap back to
+                        big endian format */
+                        {
+                        uint16_t *chars = memory + reg[R_R0];
+                        while(*chars)
+                        {
+                            char char1 = (*chars) & 0xFF;
+                            putc(char1, stdout);
+                            char char2 = (*chars) >> 8;
+                            if (char2) putc(char2, stdout);
+                            ++chars;
+                        }
+                        fflush(stdout);
+                        }
+                        break;
+                    case TRAP_HALT:
+                        // TRAP HALT
+                        {
+                        puts("HALT");
+                        fflush(stdout);
+                        running = 0;
+                        }
+                        break;
+                }
                 break;
             case OP_RES:
                 // DO NOTHING
@@ -295,10 +534,12 @@ int main(int argc, const char* argv[]){
                 // DO NOTHING
             default:
                 // BAD OPCODE
+                printf("Bad opcode given: %x", op);
                 break;
         }
     }
 
     // Handle shutdown
+    restore_input_buffering();
     return 0;
 }
