@@ -294,7 +294,9 @@ int main(int argc, const char* argv[]){
     }
 
     // Setup
+    #ifdef linux
     signal(SIGINT, handle_interrupt);
+    #endif
     disable_input_buffering();
 
     // Set PC to its starting position, originating at 0x3000
